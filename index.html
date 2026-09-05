@@ -156,17 +156,17 @@
   .concluded .k{font-size:13px;color:var(--ink-2);margin-top:6px}
 
   .field-chart{max-width:660px}
-  .fbar{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:center;margin-bottom:11px}
+  .fbar{display:grid;grid-template-columns:150px 1fr 92px;gap:14px;align-items:center;margin-bottom:11px}
+  .fbar .amt{text-align:right;font-size:13px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
   .fbar .lab{font-size:13.5px;color:var(--ink-2)}
   .fbar .lab em{font-style:normal;color:var(--ink-3);font-size:12px;display:block}
   .fline{position:relative;height:26px}
   .fline .rangebar{position:absolute;top:7px;height:12px;background:var(--accent);opacity:.30;border-radius:2px}
   .fline .point{position:absolute;top:3px;width:2px;height:20px;background:var(--ink)}
-  .fline .tag{position:absolute;top:4px;font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink-2)}
   .fbar.concl .rangebar{opacity:.55}
   .fbar.floor .rangebar{background:#7b8f88;opacity:.35}
   .axis{display:flex;justify-content:space-between;font-size:11.5px;color:var(--ink-3);
-    border-top:1px solid var(--rule);padding-top:5px;margin-left:164px}
+    border-top:1px solid var(--rule);padding-top:5px;margin:0 106px 0 164px}
 
   table.methods{border-collapse:collapse;width:100%;max-width:660px;font-size:13.5px;margin-top:20px}
   table.methods th,table.methods td{padding:7px 10px;border-bottom:1px solid var(--rule);
@@ -268,6 +268,11 @@
     <select id="industry"></select>
     <p class="note">Industry medians drive margin fade, capex and terminal returns.</p>
 
+    <div class="field"><label for="betaIn">Unlevered beta</label>
+      <input type="number" id="betaIn" step="0.05"></div>
+    <div class="field"><label for="deIn">Target debt ÷ equity</label>
+      <input type="number" id="deIn" step="0.05"></div>
+
     <div class="field"><label for="baseRevenue">Revenue, latest year</label>
       <input type="number" id="baseRevenue" value="50" step="0.1"></div>
     <div class="field"><label for="baseEbitdaMargin">EBITDA margin, normalised</label>
@@ -298,6 +303,13 @@
       <input type="number" id="nav" value="21" step="0.1"></div>
     <div class="field"><label for="shares">Shares outstanding (lakh)</label>
       <input type="number" id="shares" value="100" step="1"></div>
+
+    <h2>Comparables</h2>
+    <div class="field"><label for="evEbitdaIn">EV ÷ EBITDA multiple</label>
+      <input type="number" id="evEbitdaIn" step="0.5"></div>
+    <div class="field"><label for="peIn">Price ÷ earnings multiple</label>
+      <input type="number" id="peIn" step="0.5"></div>
+    <p class="note">Seeded from the industry median. Override with your own peer set — these drive the multiples method, not the cash flow one.</p>
 
     <h2>Growth</h2>
     <div class="field"><label for="g1">Revenue growth, year 1</label>
@@ -591,8 +603,26 @@ const PURPOSES={
              note:"Illiquid, usually non-controlling. Document how each discount was derived; this is the part that gets challenged."}
 };
 
+const INDUSTRY_SEEDED=["betaIn","deIn","evEbitdaIn","peIn"];
+function seedFromIndustry(force){
+  const base=INDUSTRIES[sel.value];
+  const map={betaIn:base.beta, deIn:base.de, evEbitdaIn:base.evEbitda, peIn:base.pe};
+  INDUSTRY_SEEDED.forEach(id=>{
+    if(force || !touched.has(id)){
+      $(id).value=map[id];
+      $(id).closest(".field").classList.add("assumed");
+    }
+  });
+}
+
 function readInputs(){
-  const ind=INDUSTRIES[sel.value];
+  const base=INDUSTRIES[sel.value];
+  // industry medians are defaults; anything the user typed wins
+  const ind={...base,
+    beta:      n("betaIn")     || base.beta,
+    de:        n("deIn")       || base.de,
+    evEbitda:  n("evEbitdaIn") || base.evEbitda,
+    pe:        n("peIn")       || base.pe};
   const m={riskFree:pct("riskFree"),matureERP:pct("matureERP"),crp:pct("crp"),tax:pct("tax")};
   const co={
     baseRevenue:n("baseRevenue"), baseEbitdaMargin:pct("baseEbitdaMargin"),
@@ -807,7 +837,7 @@ function render(){
     return `<div class="fbar ${cls}"><div class="lab">${lab}<em>${sub}</em></div>
       <div class="fline"><div class="rangebar" style="left:${l}%;width:${wdt}%"></div>
       ${point!=null?`<div class="point" style="left:${posn(point)}%"></div>`:""}
-      <div class="tag" style="left:calc(${Math.min(l+wdt,86)}% + 8px)">${cr((lo+hi)/2)}</div></div></div>`;
+      </div><div class="amt">${cr((lo+hi)/2)}</div></div>`;
   };
   $("fieldChart").innerHTML=
     barRow("Discounted cash flow",`weight ${(wDcf*100).toFixed(0)}%`,dcfLo,dcfHi,r.adj)+
@@ -1007,6 +1037,10 @@ document.querySelectorAll("#rail input, #rail select").forEach(el=>{
   el.addEventListener("input",()=>{ wrap.classList.remove("assumed"); touched.add(el.id); render(); });
   el.addEventListener("change",render);
 });
+sel.addEventListener("change",()=>{
+  INDUSTRY_SEEDED.forEach(id=>touched.delete(id));
+  seedFromIndustry(true); render();
+});
 $("purpose").addEventListener("change",()=>{
   manualWeights=false;
   const P=PURPOSES[$("purpose").value];
@@ -1048,7 +1082,10 @@ $("pApply").addEventListener("click",()=>{
   render();
 });
 
-(function seed(){const P=PURPOSES[$("purpose").value];$("dlom").value=P.dlom;$("dloc").value=P.dloc;})();
+(function seed(){
+  const P=PURPOSES[$("purpose").value];$("dlom").value=P.dlom;$("dloc").value=P.dloc;
+  seedFromIndustry(true);
+})();
 render();
 </script>
 </body>
