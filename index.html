@@ -175,6 +175,34 @@
   table.methods th:first-child,table.methods td:first-child{text-align:left}
   table.methods tr.concl td{border-top:1px solid var(--ink);border-bottom:none;font-weight:600}
 
+  /* interactive sensitivity */
+  .play{border:1px solid var(--rule);border-radius:3px;padding:14px 16px;margin-bottom:16px;
+    background:var(--panel);max-width:760px}
+  .sliders{display:grid;grid-template-columns:repeat(3,1fr);gap:16px 22px}
+  @media (max-width:900px){.sliders{grid-template-columns:1fr 1fr}}
+  @media (max-width:620px){.sliders{grid-template-columns:1fr}}
+  .slider.off{opacity:.4;pointer-events:none}
+  .slider label{display:flex;justify-content:space-between;font-size:13px;color:var(--ink-2);margin-bottom:5px}
+  .slider label b{font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink)}
+  .slider input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .readout{display:flex;gap:28px;align-items:flex-end;flex-wrap:wrap;
+    margin-top:14px;padding-top:12px;border-top:1px solid var(--rule-strong)}
+  .readout .big{font-family:var(--serif);font-size:27px;font-weight:600;line-height:1;
+    font-variant-numeric:tabular-nums}
+  .readout .k{font-size:12px;color:var(--ink-3);display:block;margin-top:5px}
+  .readout .delta{font-size:13px;font-variant-numeric:tabular-nums}
+  .readout .delta.up{color:var(--accent)} .readout .delta.down{color:var(--red)}
+  .playbtns{margin-left:auto;display:flex;gap:8px}
+  .playbtns button{font-family:var(--sans);font-size:13px;padding:7px 13px;cursor:pointer;
+    border:1px solid var(--rule-strong);background:var(--paper);color:var(--ink);border-radius:3px}
+  .playbtns button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .playbtns button:hover{border-color:var(--accent)}
+  .stepsel{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-3);margin-bottom:10px}
+  .stepsel select{width:auto;padding:3px 6px;font-size:12.5px}
+  table.sens td{cursor:pointer}
+  table.sens td:hover{outline:1px solid var(--accent);outline-offset:-1px}
+  table.sens td.picked{outline:2px solid var(--accent);outline-offset:-2px}
+
   /* tornado */
   .tornado{max-width:680px}
   .trow{display:grid;grid-template-columns:190px 1fr 96px;gap:12px;align-items:center;margin-bottom:8px}
@@ -332,8 +360,32 @@
 
     <section>
       <h3>What moves the answer</h3>
-      <p class="sub">Equity value across discount rate and terminal growth. Your case is outlined.</p>
+      <p class="sub">Drag either slider, or click any cell in the grid, to see the effect immediately. Nothing changes in your case until you apply it.</p>
+
+      <div class="play">
+        <div class="sliders" id="playSliders"></div>
+
+        <div class="readout">
+          <div><span class="big" id="pVal">—</span><span class="k">Equity value</span></div>
+          <div><span class="big" id="pShare">—</span><span class="k">Per share</span></div>
+          <div><span class="delta" id="pDelta">—</span><span class="k">Against your case</span></div>
+          <div class="playbtns">
+            <button type="button" id="pReset">Reset</button>
+            <button type="button" id="pApply" class="primary">Apply to case</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stepsel">
+        <span>Grid step</span>
+        <select id="sensStep">
+          <option value="0.005">±0.5% per column</option>
+          <option value="0.01" selected>±1.0% per column</option>
+          <option value="0.02">±2.0% per column</option>
+        </select>
+      </div>
       <div class="scroller"><table class="sens" id="sens"></table></div>
+      <p class="sub" style="margin-top:10px">✳ Columns above the risk-free rate are capped back to it, so those cells repeat the column beside them.</p>
     </section>
 
     <section>
@@ -532,6 +584,81 @@ function readInputs(){
   return {m,ind,co,a,P};
 }
 
+let CURRENT=null, playDragging=false;
+
+// Each lever: where it reads its starting point from, how it is shown,
+// and how it is written back to the input rail when applied.
+const LEVERS=[
+  {id:"sWacc", label:"Discount rate", fmt:pc, step:0.0005,
+   base:(m,ind,co,a,r)=>r.wacc, min:(m,ind,co,a,r)=>Math.max(0.05,r.wacc-0.05), max:(m,ind,co,a,r)=>r.wacc+0.05,
+   kind:"wacc"},
+  {id:"sG", label:"Terminal growth", fmt:pc, step:0.0005,
+   base:(m,ind,co,a)=>a.terminalGrowth, min:()=>0, max:m=>m.riskFree,
+   kind:"a", key:"terminalGrowth", input:"terminalGrowth", scale:100},
+  {id:"sMargin", label:"EBITDA margin", fmt:pc, step:0.0025,
+   base:(m,ind,co)=>co.baseEbitdaMargin, min:()=>0, max:()=>0.45,
+   kind:"co", key:"baseEbitdaMargin", input:"baseEbitdaMargin", scale:100},
+  {id:"sCapex", label:"Capex ÷ revenue", fmt:pc, step:0.0025,
+   base:(m,ind,co)=>co.baseCapexToSales, min:()=>0, max:()=>0.25,
+   kind:"co", key:"baseCapexToSales", input:"baseCapexToSales", scale:100},
+  {id:"sGrowth", label:"Growth, years 1–3", fmt:v=>(v>=0?"+":"")+(v*100).toFixed(1)+" pp", step:0.005,
+   base:()=>0, min:()=>-0.15, max:()=>0.20, kind:"growthShift"},
+  {id:"sRecv", label:"Receivable days", fmt:v=>Math.round(v)+" days", step:1,
+   base:(m,ind,co)=>co.receivableDays, min:()=>0, max:()=>210,
+   kind:"co", key:"receivableDays", input:"receivableDays", scale:1},
+  {id:"sDlom", label:"Marketability discount", fmt:pc, step:0.01,
+   base:(m,ind,co,a)=>a.dlom, min:()=>0, max:()=>0.5,
+   kind:"a", key:"dlom", input:"dlom", scale:100, needsDiscounts:true}
+];
+
+function buildSliders(){
+  $("playSliders").innerHTML=LEVERS.map(L=>
+    `<div class="slider" id="${L.id}Wrap">
+       <label for="${L.id}">${L.label} <b id="${L.id}V">—</b></label>
+       <input type="range" id="${L.id}" step="${L.step}">
+     </div>`).join("");
+  LEVERS.forEach(L=>{
+    const el=$(L.id);
+    el.addEventListener("pointerdown",()=>playDragging=true);
+    el.addEventListener("pointerup",()=>playDragging=false);
+    el.addEventListener("input",updatePlay);
+  });
+}
+
+/** Read every lever and assemble the perturbed company + assumption objects. */
+function leverState(){
+  const {m,ind,co,a,base}=CURRENT;
+  const coΔ={...co}, aΔ={...a}; let ww=null;
+  for(const L of LEVERS){
+    const el=$(L.id); if(!el) continue;
+    const v=parseFloat(el.value);
+    $(L.id+"V").textContent=L.fmt(v);
+    if(L.kind==="wacc") ww=v;
+    else if(L.kind==="co") coΔ[L.key]=v;
+    else if(L.kind==="a") aΔ[L.key]=v;
+    else if(L.kind==="growthShift") aΔ.growth=a.growth.map(g=>g+v);
+  }
+  return {m,ind,coΔ,aΔ,ww,base};
+}
+
+function updatePlay(){
+  if(!CURRENT) return;
+  const {m,ind,coΔ,aΔ,ww,base}=leverState();
+  if(ww<=aΔ.terminalGrowth){
+    $("pVal").textContent="—"; $("pShare").textContent="—";
+    $("pDelta").textContent="Discount rate must exceed terminal growth";
+    $("pDelta").className="delta"; return;
+  }
+  const co=coΔ;
+  const alt=value(m,ind,coΔ,aΔ,ww);
+  if(!alt) return;
+  $("pVal").textContent=cr(alt.adj);
+  $("pShare").textContent=co.shares? rup(alt.adj*100/co.shares) : "—";
+  const d=alt.adj-base.adj, pctChange=base.adj? d/Math.abs(base.adj)*100 : 0;
+  $("pDelta").textContent=(d>=0?"+":"")+cr(d).replace("₹ ","₹")+`  (${(pctChange>=0?"+":"")}${pctChange.toFixed(0)}%)`;
+  $("pDelta").className="delta "+(d>=0?"up":"down");
+}
+
 function render(){
   const {m,ind,co,a,P}=readInputs();
   $("dlom").disabled=!P.discounts; $("dloc").disabled=!P.discounts;
@@ -671,13 +798,15 @@ function render(){
     "</tbody><tfoot><tr><td>Total discounted</td>"+"<td></td>".repeat(8)+
     `<td>${r.pvExplicit.toFixed(1)}</td></tr></tfoot>`;
 
-  // sensitivity
-  const wD=[-0.02,-0.01,0,0.01,0.02], gD=[-0.01,-0.005,0,0.005,0.01];
+  // ---------- sensitivity grid, clickable ----------
+  CURRENT={m,ind,co,a,base:r};
+  const stepW=parseFloat($("sensStep").value), stepG=stepW/2;
+  const wD=[-2*stepW,-stepW,0,stepW,2*stepW], gD=[-2*stepG,-stepG,0,stepG,2*stepG];
   const cells=[];
   for(const dw of wD){ const row=[];
     for(const dg of gD){
       const g=a.terminalGrowth+dg, ww=r.wacc+dw;
-      const alt=(ww<=g)?null:value(m,ind,co,{...a,terminalGrowth:g},ww);
+      const alt=(ww<=g||ww<=0)?null:value(m,ind,co,{...a,terminalGrowth:g},ww);
       row.push(alt? alt.adj : null);
     } cells.push(row); }
   const flat=cells.flat().filter(v=>v!=null);
@@ -686,10 +815,34 @@ function render(){
     const t=(v-lo)/((hi-lo)||1);
     return `background:rgba(14,90,72,${0.06+t*0.30})`; };
   $("sens").innerHTML=
-    "<thead><tr><th>WACC ╲ terminal g</th>"+gD.map(dg=>`<th>${pc1(a.terminalGrowth+dg)}</th>`).join("")+"</tr></thead><tbody>"+
+    "<thead><tr><th>WACC ╲ terminal g</th>"+gD.map(dg=>{
+      const gg=a.terminalGrowth+dg, over=gg>m.riskFree;
+      return `<th${over?' style="color:#9aa5a0"' : ''}>${pc1(gg)}${over?" ✳":""}</th>`;
+    }).join("")+"</tr></thead><tbody>"+
     cells.map((row,i)=>`<tr><th>${pc1(r.wacc+wD[i])}</th>`+
-      row.map((v,j)=>`<td class="${(wD[i]===0&&gD[j]===0)?"base":""}" style="${shade(v)}">${v==null?"—":v.toFixed(1)}</td>`).join("")+
+      row.map((v,j)=>`<td class="${(wD[i]===0&&gD[j]===0)?"base":""}" `+
+        `data-w="${r.wacc+wD[i]}" data-g="${a.terminalGrowth+gD[j]}" `+
+        `style="${shade(v)}">${v==null?"—":v.toFixed(1)}</td>`).join("")+
       "</tr>").join("")+"</tbody>";
+
+  $("sens").querySelectorAll("td").forEach(td=>{
+    td.addEventListener("click",()=>{
+      $("sWacc").value=td.dataset.w; $("sG").value=td.dataset.g;
+      $("sens").querySelectorAll("td.picked").forEach(x=>x.classList.remove("picked"));
+      td.classList.add("picked");
+      updatePlay();
+    });
+  });
+
+  // ---------- sliders ----------
+  if(!$("sWacc")) buildSliders();
+  LEVERS.forEach(L=>{
+    const el=$(L.id);
+    el.min=L.min(m,ind,co,a,r); el.max=L.max(m,ind,co,a,r);
+    if(!playDragging) el.value=L.base(m,ind,co,a,r);
+    if(L.needsDiscounts) $(L.id+"Wrap").classList.toggle("off",!P.discounts);
+  });
+  updatePlay();
 
   // ---------- tornado: one driver at a time ----------
   const flex=(coΔ,aΔ)=>{
@@ -798,6 +951,36 @@ $("purpose").addEventListener("change",()=>{
   [$("dlom"),$("dloc")].forEach(el=>el.closest(".field").classList.remove("assumed"));
   render();
 });
+$("sensStep").addEventListener("change",render);
+$("pReset").addEventListener("click",()=>{
+  if(!CURRENT) return;
+  const {m,ind,co,a,base}=CURRENT;
+  LEVERS.forEach(L=>{ $(L.id).value=L.base(m,ind,co,a,base); });
+  $("sens").querySelectorAll("td.picked").forEach(x=>x.classList.remove("picked"));
+  updatePlay();
+});
+$("pApply").addEventListener("click",()=>{
+  if(!CURRENT) return;
+  const {a,base}=CURRENT;
+  const written=[];
+  for(const L of LEVERS){
+    const v=parseFloat($(L.id).value);
+    if(L.kind==="wacc"){
+      // shift the company-specific premium instead of overriding WACC, so the build-up stays consistent
+      const shift=(v-base.wacc)/Math.max(base.w.we,0.01);
+      $("csrp").value=(Math.max(0,a.csrp+shift)*100).toFixed(2); written.push($("csrp"));
+    } else if(L.kind==="growthShift"){
+      ["g1","g2","g3"].forEach((id,i)=>{
+        $(id).value=((a.growth[i]+v)*100).toFixed(1); written.push($(id));
+      });
+    } else if(L.input){
+      $(L.input).value=(v*L.scale).toFixed(L.scale===1?0:2); written.push($(L.input));
+    }
+  }
+  written.forEach(el=>el.closest(".field").classList.remove("assumed"));
+  render();
+});
+
 (function seed(){const P=PURPOSES[$("purpose").value];$("dlom").value=P.dlom;$("dloc").value=P.dloc;})();
 render();
 </script>
