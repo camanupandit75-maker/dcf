@@ -175,6 +175,20 @@
   table.methods th:first-child,table.methods td:first-child{text-align:left}
   table.methods tr.concl td{border-top:1px solid var(--ink);border-bottom:none;font-weight:600}
 
+  /* method weights */
+  .weights{border:1px solid var(--rule);border-radius:3px;padding:13px 16px;margin:18px 0 4px;
+    background:var(--panel);max-width:660px}
+  .weights .wgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px 20px}
+  @media (max-width:620px){.weights .wgrid{grid-template-columns:1fr}}
+  .weights .whead{display:flex;justify-content:space-between;align-items:center;
+    font-size:12.5px;color:var(--ink-3);margin-bottom:10px}
+  .weights .whead button{font-family:var(--sans);font-size:12.5px;padding:4px 10px;cursor:pointer;
+    border:1px solid var(--rule-strong);background:var(--paper);color:var(--ink);border-radius:3px}
+  .weights label{display:flex;justify-content:space-between;font-size:13px;color:var(--ink-2);margin-bottom:4px}
+  .weights label b{font-variant-numeric:tabular-nums;color:var(--ink)}
+  .weights input[type=range]{width:100%;accent-color:var(--accent);margin:0}
+  .weights.locked{opacity:.5;pointer-events:none}
+
   /* interactive sensitivity */
   .play{border:1px solid var(--rule);border-radius:3px;padding:14px 16px;margin-bottom:16px;
     background:var(--panel);max-width:760px}
@@ -342,6 +356,18 @@
         <div><div class="band num" id="cBand">—</div><div class="k" id="cBandLabel">Concluded range</div></div>
         <div><div class="band num" id="cMid">—</div><div class="k">Midpoint</div></div>
       </div>
+      <div class="weights" id="weights">
+        <div class="whead">
+          <span id="wMode">Weights set automatically from the business profile</span>
+          <button type="button" id="wAuto">Reset to automatic</button>
+        </div>
+        <div class="wgrid">
+          <div><label for="wDcfS">Cash flow <b id="wDcfV">—</b></label><input type="range" id="wDcfS" min="0" max="100" step="5"></div>
+          <div><label for="wCompS">Multiples <b id="wCompV">—</b></label><input type="range" id="wCompS" min="0" max="100" step="5"></div>
+          <div><label for="wNavS">Net assets <b id="wNavV">—</b></label><input type="range" id="wNavS" min="0" max="100" step="5"></div>
+        </div>
+      </div>
+
       <div class="field-chart" id="fieldChart"></div>
       <table class="methods" id="methods"></table>
     </section>
@@ -584,7 +610,7 @@ function readInputs(){
   return {m,ind,co,a,P};
 }
 
-let CURRENT=null, playDragging=false;
+let CURRENT=null, playDragging=false, manualWeights=false;
 
 // Each lever: where it reads its starting point from, how it is shown,
 // and how it is written back to the input rail when applied.
@@ -674,18 +700,21 @@ function render(){
   $("hTv").textContent=pc1(r.tvShare);
 
   // bridge
+  const dlomAmt = r.equity*a.dlom;
+  const dlocAmt = r.equity*(1-a.dlom)*a.dloc;
   const rows=[
     ["Present value of years 1–10",r.pvExplicit,false],
     ["Present value of terminal value",r.pvTerminal,false],
     ["Enterprise value",r.ev,false,true],
-    ["Less: net debt",-r.netDebt,true],
-    ["Less: minority interest",-co.minorityInterest,true],
+    [r.netDebt>=0?"Less: net debt":"Add: net cash", -r.netDebt, r.netDebt>=0],
+    ["Less: minority interest",-co.minorityInterest,co.minorityInterest>0],
     ["Add: surplus assets",co.surplusAssets,false],
     ["Equity value",r.equity,false,true],
-    [`Less: marketability discount at ${pc1(a.dlom)}`,-(r.equity-r.equity*(1-a.dlom)),true],
+    ...(a.dlom>0?[[`Less: marketability discount at ${pc1(a.dlom)}`,-dlomAmt,true]]:[]),
+    ...(a.dloc>0?[[`Less: minority discount at ${pc1(a.dloc)}`,-dlocAmt,true]]:[]),
     ["Equity value, adjusted",r.adj,false,true]
   ];
-  $("bridge").innerHTML=rows.map(([k,v,minus,total])=>
+  $("bridge").innerHTML=rows.filter(([k,v,minus,total])=>total||v!==0).map(([k,v,minus,total])=>
     `<tr class="${total?"total":""}"><td>${k}</td><td class="${minus?"minus":""}">${cr(v)}</td></tr>`).join("");
 
   // ---------- methods, football field, concluded value ----------
@@ -721,6 +750,28 @@ function render(){
   if(baseEbitda<=0 || basePat<=0){ wDcf=0; wComp=0.35; wNav=0.65; }
   if(compMid==null){ wComp=0; wDcf=0.85; wNav=0.15; }
   if(P.weights){ wDcf=P.weights.dcf; wComp=P.weights.comp; wNav=P.weights.nav; }
+
+  // manual override: normalise whatever the sliders say
+  const weightsLocked=!!P.weights;
+  $("weights").classList.toggle("locked",weightsLocked);
+  if(manualWeights && !weightsLocked){
+    const raw=[+$("wDcfS").value,+$("wCompS").value,+$("wNavS").value];
+    const sum=raw.reduce((x,y)=>x+y,0);
+    if(sum>0){ [wDcf,wComp,wNav]=raw.map(v=>v/sum); }
+  } else {
+    $("wDcfS").value=Math.round(wDcf*100);
+    $("wCompS").value=Math.round(wComp*100);
+    $("wNavS").value=Math.round(wNav*100);
+  }
+  $("wDcfV").textContent=(wDcf*100).toFixed(0)+"%";
+  $("wCompV").textContent=(wComp*100).toFixed(0)+"%";
+  $("wNavV").textContent=(wNav*100).toFixed(0)+"%";
+  $("wMode").textContent = weightsLocked
+    ? "Weights fixed by the stated purpose"
+    : (manualWeights ? "Weights set by you — state the justification in the report"
+                     : "Weights set automatically from the business profile");
+  const divergence = compMid!=null ? Math.abs(r.adj-compMid)/Math.max(compMid,1) : 0;
+  const diverged = divergence>0.30 && wComp>0;
   const mid = wDcf*r.adj + wComp*(compMid??0) + wNav*navFloor;
   const halfWidth = Math.max(0.12, (dcfHi-dcfLo)/(2*Math.max(r.adj,1)));
   let cLo=mid*(1-halfWidth), cHi=mid*(1+halfWidth);
@@ -732,10 +783,19 @@ function render(){
       ? `${rup(perShareOf(cLo))} – ${rup(perShareOf(cHi))}`
       : `${cr(cLo)} – ${cr(cHi)}`;
   const reportMid = P.basis==="pershare" ? rup(perShareOf(midShown)) : cr(midShown);
-  $("cBand").textContent=reportBand;
-  $("cMid").textContent=reportMid;
-  $("cBandLabel").textContent = P.basis==="pershare" ? "Concluded range, per share" : "Concluded range";
-  $("basisNote").textContent = `${P.label}. Reported on ${a.dlom||a.dloc? "a discounted basis" : "an undiscounted basis"}, weighted across methods.`;
+  if(diverged){
+    const dcfTxt = P.basis==="pershare"? rup(perShareOf(r.adj)) : cr(r.adj);
+    const cmpTxt = P.basis==="pershare"? rup(perShareOf(compMid)) : cr(compMid);
+    $("cBand").textContent=`${dcfTxt}  vs  ${cmpTxt}`;
+    $("cBandLabel").textContent="Cash flow method vs trading multiples";
+    $("cMid").textContent="Not concluded";
+    $("basisNote").textContent=`${P.label}. The two earnings-based methods are ${(divergence*100).toFixed(0)}% apart, so no weighted conclusion is shown. Reconcile them first — a midpoint between methods that disagree this much is not a valuation.`;
+  } else {
+    $("cBand").textContent=reportBand;
+    $("cMid").textContent=reportMid;
+    $("cBandLabel").textContent = P.basis==="pershare" ? "Concluded range, per share" : "Concluded range";
+    $("basisNote").textContent = `${P.label}. Reported on ${a.dlom||a.dloc? "a discounted basis" : "an undiscounted basis"}, weighted across methods.`;
+  }
 
   // football field
   const all=[dcfLo,dcfHi,compLo,compHi,navFloor,cLo,cHi].filter(v=>v!=null&&isFinite(v));
@@ -753,7 +813,7 @@ function render(){
     barRow("Discounted cash flow",`weight ${(wDcf*100).toFixed(0)}%`,dcfLo,dcfHi,r.adj)+
     (compLo!=null?barRow("Trading multiples",`EV/EBITDA ${ind.evEbitda.toFixed(1)}× · P/E ${ind.pe}×`,compLo,compHi,compMid):"")+
     barRow("Net asset value",`floor, weight ${(wNav*100).toFixed(0)}%`,navFloor*0.98,navFloor*1.02,navFloor,"floor")+
-    barRow("Concluded","weighted",cLo,cHi,midShown,"concl")+
+    (diverged? "" : barRow("Concluded","weighted",cLo,cHi,midShown,"concl"))+
     `<div class="axis"><span>${cr(axLo)}</span><span>${cr(axHi)}</span></div>`;
 
   const mRows=[
@@ -767,11 +827,13 @@ function render(){
     "<thead><tr><th>Method</th><th>Equity value</th><th>Per share</th><th>Weight</th></tr></thead><tbody>"+
     mRows.map(([k,v,wt])=>v==null?"":`<tr><td>${k}</td><td>${cr(v)}</td><td>${rup(perShareOf(v))}</td>`+
       `<td>${wt==null?"—":(wt*100).toFixed(0)+"%"}</td></tr>`).join("")+
-    `<tr class="concl"><td>Concluded, midpoint</td><td>${cr(midShown)}</td><td>${rup(perShareOf(midShown))}</td><td>100%</td></tr>`+
+    (diverged
+      ? `<tr class="concl"><td>Concluded, midpoint</td><td colspan="3" style="text-align:left;color:var(--red)">Withheld — methods diverge by ${(divergence*100).toFixed(0)}%</td></tr>`
+      : `<tr class="concl"><td>Concluded, midpoint</td><td>${cr(midShown)}</td><td>${rup(perShareOf(midShown))}</td><td>100%</td></tr>`)+
     "</tbody>";
 
   if(compMid!=null){
-    const gap=Math.abs(r.adj-compMid)/Math.max(compMid,1);
+    const gap=divergence;
     if(gap>0.30) r.flags.push(`The cash flow result and the trading multiples are ${(gap*100).toFixed(0)}% apart. Do not average past this — either the projections are heroic relative to how the market prices ${ind.label.toLowerCase()}, or these comparables do not fit the business. Explain which in the report.`);
   }
   if(r.adj<navFloor && wNav>0) r.flags.push("Earnings-based value is below adjusted net asset value. Either the projections understate the business or the assets are worth more deployed elsewhere. Say which.");
@@ -946,12 +1008,17 @@ document.querySelectorAll("#rail input, #rail select").forEach(el=>{
   el.addEventListener("change",render);
 });
 $("purpose").addEventListener("change",()=>{
+  manualWeights=false;
   const P=PURPOSES[$("purpose").value];
   $("dlom").value=P.dlom; $("dloc").value=P.dloc;
   [$("dlom"),$("dloc")].forEach(el=>el.closest(".field").classList.remove("assumed"));
   render();
 });
 $("sensStep").addEventListener("change",render);
+["wDcfS","wCompS","wNavS"].forEach(id=>{
+  $(id).addEventListener("input",()=>{ manualWeights=true; render(); });
+});
+$("wAuto").addEventListener("click",()=>{ manualWeights=false; render(); });
 $("pReset").addEventListener("click",()=>{
   if(!CURRENT) return;
   const {m,ind,co,a,base}=CURRENT;
